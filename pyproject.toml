@@ -1,0 +1,15 @@
+[project]
+name = "ai-mock-interview-platform-pending"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "librosa>=0.11.0",
+    "numpy==2.2",
+    "openai-whisper>=20240930",
+    "pyaudio>=0.2.14",
+    "silero-vad>=5.1.2",
+    "torch>=2.7.1",
+    "torchaudio>=2.7.1",
+]
