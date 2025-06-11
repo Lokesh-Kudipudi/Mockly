@@ -4,14 +4,16 @@ import time
 import numpy as np
 from silero_vad import VADIterator
 import constants
-import whisper
+from faster_whisper import WhisperModel
+# import whisper
 import wave
 import warnings
 
 warnings.filterwarnings("ignore")
 
 print("Loading Whisper Model")
-whisper_model = whisper.load_model("tiny")
+# whisper_model = whisper.load_model("tiny")
+whisper_model = WhisperModel("tiny.en", device="cpu")
 
 print("Loading VAD Model")
 vad_model, _ = torch.hub.load(repo_or_dir="snakers4/silero-vad",
@@ -35,13 +37,18 @@ def transcribe_audio(audioChunkBytes, sample_rate):
   audio_bytes = b"".join(audioChunkBytes)
   audio_np = np.frombuffer(
       audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-  audio_np = whisper.pad_or_trim(audio_np)
 
-  mel = whisper.log_mel_spectrogram(audio_np).to(whisper_model.device)
-  options = whisper.DecodingOptions(language="en")
-  result = whisper.decode(whisper_model, mel, options)
+  # audio_np = whisper.pad_or_trim(audio_np)
+  # mel = whisper.log_mel_spectrogram(audio_np).to(whisper_model.device)
+  # options = whisper.DecodingOptions(language="en")
+  # result = whisper.decode(whisper_model, mel, options)
+  # print("Transcription:", result.text)
 
-  print("Transcription:", result.text)
+  segments, _ = whisper_model.transcribe(audio_np, language="en")
+  print("Transcription:", end=" ")
+  for segment in segments:
+    print(segment.text, end=" ")
+  print()
   pass
 
 
