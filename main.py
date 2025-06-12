@@ -1,6 +1,5 @@
 import torch
 import pyaudio
-import time
 import numpy as np
 from silero_vad import VADIterator
 import constants
@@ -8,6 +7,10 @@ from faster_whisper import WhisperModel
 # import whisper
 import wave
 import warnings
+import os
+from google import genai
+from google.genai import types
+import pyttsx3
 
 warnings.filterwarnings("ignore")
 
@@ -22,6 +25,43 @@ vad_model, _ = torch.hub.load(repo_or_dir="snakers4/silero-vad",
                               force_reload=False,
                               onnx=False)
 vad_iterator = VADIterator(vad_model)
+
+print("Initializing Chat Model")
+
+
+def initialize_chatmodel():
+  client = genai.Client(
+      api_key=os.environ.get("GEMINI_API_KEY"),
+  )
+
+  model = "gemini-2.0-flash-lite"
+
+  generate_content_config = types.GenerateContentConfig(
+      response_mime_type="text/plain",
+      system_instruction="You are a conversational assistant whose output will be read by a Text-to-Speech (TTS) system. Your responses must be clear, natural, and free from any special formatting. Output Rules: Do not use Markdown formatting like **bold**, *italics*, backticks, or code blocks. Avoid symbols like dashes (--), underscores (_), emojis, or bullet points. Speak naturally. Use complete sentences and conversational phrasing. If you list items, format them using natural speech: for example, 'First, … Second, … Finally, …' If you need to emphasize something, use words like important, note that, or keep in mind, not formatting. No special characters unless needed for pronunciation (like apostrophes or punctuation for clarity). Example:  Don't say: 'Here are some tips: Practice, Pause, and Pace.' Say: 'Here are some tips. First, practice regularly. Second, remember to pause between ideas. And third, keep a steady pace.'"
+  )
+
+  chat_model = client.chats.create(
+      model=model, config=generate_content_config)
+  return chat_model
+
+
+chat_model = initialize_chatmodel()
+
+print("Iinitializing TTS Model")
+tts_engine = pyttsx3.init()
+voices = tts_engine.getProperty('voices')
+tts_engine.setProperty('voice', voices[1].id)
+
+
+def send_message(chat_model, message):
+  response = chat_model.send_message(message)
+  return response
+
+
+def get_chat_history(chat_model):
+  chat_history = chat_model.get_history()
+  return chat_history
 
 
 def save_audio_to_wav(audio_chunks, sample_rate, filename="output.wav"):
@@ -45,11 +85,7 @@ def transcribe_audio(audioChunkBytes, sample_rate):
   # print("Transcription:", result.text)
 
   segments, _ = whisper_model.transcribe(audio_np, language="en")
-  print("Transcription:", end=" ")
-  for segment in segments:
-    print(segment.text, end=" ")
-  print()
-  pass
+  return " ".join([segment.text for segment in segments])
 
 
 def start_vad_loop():
@@ -132,7 +168,18 @@ def start_vad_loop():
       vad_iterator.reset_states()  # Reset model state for the next utterance
 
       print("Transcribing")
-      transcribe_audio(recorded_chunks, SAMPLING_RATE)
+      audio_transcription = transcribe_audio(recorded_chunks, SAMPLING_RATE)
+      print(f"Transcription:- {audio_transcription}")
+
+      llm_response = send_message(chat_model, audio_transcription)
+      print(llm_response.text)
+
+      tts_engine.say(llm_response.text)
+      tts_engine.runAndWait()
+      chat_history = get_chat_history(chat_model)
+
+      print(chat_history)
+
       print("\n--- Listening again... ---")
 
   except KeyboardInterrupt:

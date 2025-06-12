@@ -7,7 +7,7 @@ import time
 warnings.filterwarnings("ignore")
 
 # Initialize the pipeline with your language code (e.g., 'a' for American English)
-pipeline = KPipeline(lang_code='a', repo_id='hexgrad/Kokoro-82M')
+pipeline = KPipeline(lang_code='a', repo_id='hexgrad/Kokoro-82M', trf=True)
 
 # Your input text
 text = "Without this playing with fantasy no creative work has ever yet come to birth. The debt we owe to the play of the imagination is incalculable."
