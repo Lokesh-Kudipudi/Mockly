@@ -1,9 +1,80 @@
 "use client";
 import Image from "next/image";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { io } from "socket.io-client";
+
+const BACKEND_URL = "http://localhost:3001";
+let socket;
+let audioContext, workletNode, mediaStream;
+
+async function startRecording() {
+  audioContext = new AudioContext({ sampleRate: 16000 }); // Match backend
+  await audioContext.audioWorklet.addModule("/processor.js");
+
+  mediaStream = await navigator.mediaDevices.getUserMedia({
+    audio: true,
+  });
+
+  const source =
+    audioContext.createMediaStreamSource(mediaStream);
+
+  workletNode = new AudioWorkletNode(
+    audioContext,
+    "pcm-processor"
+  );
+
+  workletNode.port.onmessage = (event) => {
+    const audioBuffer = event.data;
+    socket.emit("audioBytes", new Uint8Array(audioBuffer));
+  };
+
+  source.connect(workletNode).connect(audioContext.destination);
+}
+
+function stopRecording() {
+  if (mediaStream) {
+    mediaStream.getTracks().forEach((track) => track.stop());
+  }
+  if (audioContext) {
+    audioContext.close();
+  }
+}
 
 export default function InterviewForm() {
   const [transcript, setTranscript] = useState({});
+  const [status, setStatus] = useState("Listening"); // Listening, Recording, Processing
+  const [mode, setMode] = useState("recording"); // idle, recording
+
+  useEffect(() => {
+    socket = io(BACKEND_URL);
+
+    socket.on("set-status-client", (satus) => {
+      console.log("Status: ", satus);
+      setStatus(() => satus);
+    });
+
+    socket.on("audio-start-client", () => {
+      setMode(() => "recording");
+    });
+
+    socket.on("audio-stop-client", () => {
+      setMode(() => "idle");
+      stopRecording();
+    });
+
+    return () => {
+      if (socket) {
+        socket.disconnect();
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (mode == "recording") {
+      startRecording();
+      setStatus(() => "Listening");
+    }
+  }, [mode]);
 
   return (
     <main className="flex-grow flex items-center justify-center">
@@ -28,7 +99,7 @@ export default function InterviewForm() {
         <div className="my-8">
           <div className="flex items-center justify-center bg-gray-700 text-gray-200 p-4 rounded-lg font-medium">
             <span className="w-2.5 h-2.5 bg-red-500 rounded-full mr-3 animate-pulse"></span>
-            Status: Recording
+            Status: {status}
           </div>
         </div>
 

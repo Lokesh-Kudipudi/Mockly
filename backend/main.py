@@ -11,6 +11,9 @@ import os
 from google import genai
 from google.genai import types
 import pyttsx3
+from dotenv import load_dotenv
+
+load_dotenv()
 
 warnings.filterwarnings("ignore")
 
@@ -93,7 +96,7 @@ def start_vad_loop():
   SAMPLING_RATE = constants.SAPLING_RATE  # VAD model expects 16000Hz
   CHUNK_SIZE = constants.CHUNK_SIZE       # Number of audio frames per buffer
   FORMAT = pyaudio.paInt16
-  CHANNELS = 1
+  CHANNELS = constants.CHANNELS
 
   # --- VAD Configuration ---
   # How many consecutive non-speech chunks to consider as end of speech
