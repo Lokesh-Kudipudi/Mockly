@@ -11,6 +11,9 @@ from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 from flask_cors import CORS
+from kokoro import KPipeline
+import wave
+import io
 
 load_dotenv()
 FRONTEND_URL = "http://localhost:3000"
@@ -38,6 +41,9 @@ vad_model, _ = torch.hub.load(repo_or_dir="snakers4/silero-vad",
                               force_reload=False,
                               onnx=False)
 vad_iterator = VADIterator(vad_model)
+
+print("Loading TTS model")
+kokoro_model = KPipeline(lang_code='a', repo_id='hexgrad/Kokoro-82M')
 
 system_prompt = """
 You are an AI Interviewer. Conduct a mock interview for the following candidate:
@@ -139,6 +145,7 @@ def handleConnect():
 
 # --- Audio Stream Configuration ---
 SAMPLING_RATE = constants.SAPLING_RATE  # VAD model expects 16000Hz
+SAMPLING_RATE_TTS = constants.SAPLING_RATE_TTS
 CHUNK_SIZE = constants.CHUNK_SIZE       # Number of audio frames per buffer
 FORMAT = pyaudio.paInt16
 CHANNELS = constants.CHANNELS
@@ -161,6 +168,27 @@ def processAudio():
   states["recorded_chunks"] = []
   states["is_recording"] = False
   return audio_transcription
+
+
+def send_audio_bytes(llm_reply):
+  kokoro_generator = kokoro_model(llm_reply, voice='af_heart', speed=1)
+
+  audio_list = []
+  for _, _, audio in kokoro_generator:
+    audio_list.append(audio)
+
+  full_audio = np.concatenate(audio_list)
+  full_audio_int16 = (full_audio * 32767).astype(np.int16)
+
+  buffer = io.BytesIO()
+  with wave.open(buffer, 'wb') as wf:
+    wf.setnchannels(1)  # Mono
+    wf.setsampwidth(2)  # 16-bit
+    wf.setframerate(SAMPLING_RATE_TTS)
+    wf.writeframes(full_audio_int16.tobytes())
+
+  emit("audio-stream-client", buffer.getvalue())
+  pass
 
 
 @sio.on('audioBytes')
@@ -193,13 +221,22 @@ def handleAudioBytes(audioChunkBytes):
         states["silent_chunks_count"] += 1
         if states["silent_chunks_count"] >= SILENCE_THRESHOLD_CHUNKS:
           emit("audio-stop-client")
-          emit("set-status-client", "Processing")
+          emit("set-status-client", "Trancribing")
           audio_transcription = processAudio()
+          emit("transcript-user-client", audio_transcription)
+          emit("set-status-client", "Calling LLM")
           llm_reply = send_message(audio_transcription)
-          print(llm_reply)
-          emit("audio-start-client")
+          emit("transcript-interviewer-client", llm_reply)
+          emit("set-status-client", "Sending Audio")
+          send_audio_bytes(llm_reply)
   except Exception as e:
     print(f"An Error occured: {e}")
+  pass
+
+
+@sio.on('audio-stream-complete')
+def handleAudioStreadComplete():
+  emit("audio-start-client")
   pass
 
 

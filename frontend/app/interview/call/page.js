@@ -41,7 +41,7 @@ function stopRecording() {
 }
 
 export default function InterviewForm() {
-  const [transcript, setTranscript] = useState({});
+  const [transcript, setTranscript] = useState([]);
   const [status, setStatus] = useState("Listening"); // Listening, Recording, Processing
   const [mode, setMode] = useState("recording"); // idle, recording
 
@@ -60,6 +60,31 @@ export default function InterviewForm() {
     socket.on("audio-stop-client", () => {
       setMode(() => "idle");
       stopRecording();
+    });
+
+    socket.on("transcript-user-client", (data) => {
+      setTranscript((prev) => [
+        ...prev,
+        { role: "Candidate", content: data },
+      ]);
+    });
+
+    socket.on("transcript-interviewer-client", (data) => {
+      setTranscript((prev) => [
+        ...prev,
+        { role: "Interviewer", content: data },
+      ]);
+    });
+
+    socket.on("audio-stream-client", (data) => {
+      const blob = new Blob([data], { type: "audio/wav" });
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audio.onended = () => {
+        URL.revokeObjectURL(url);
+        socket.emit("audio-stream-complete");
+      };
+      audio.play();
     });
 
     return () => {
@@ -114,85 +139,27 @@ export default function InterviewForm() {
       </div>
 
       {/* Right Panel: Transcript */}
-      <div className="md:w-2/3  rounded-xl overflow-y-scroll max-h-[80vh]">
+      <div className="md:w-2/3  rounded-xl max-h-[80vh] self-start overflow-auto scrollbar-none [&::-webkit-scrollbar]:hidden py-6 px-4">
         <h1 className="text-3xl font-bold text-white mb-5 pb-3 border-b border-gray-700">
           Interview Transcript
         </h1>
         <div className="space-y-6 text-gray-300">
-          <div>
-            <p className="font-bold text-white">Interviewer:</p>
-            <p className="italic">
-              Tell me about a time you failed and how you handled
-              it.
-            </p>
-          </div>
-          <div>
-            <p className="font-bold text-white">Candidate:</p>
-            <p>
-              During a team project, I missed a critical deadline
-              due to poor time management. I immediately informed
-              my team, took responsibility, and worked extra
-              hours to catch up. I learned the importance of
-              better planning and communication
-            </p>
-          </div>
-          <div>
-            <p className="font-bold text-white">Interviewer:</p>
-            <p className="italic">
-              How do you handle stress and pressure
-            </p>
-          </div>
-          <div>
-            <p className="font-bold text-white">Candidate:</p>
-            <p>
-              I manage stress by prioritizing tasks, taking short
-              breaks, and practicing mindfulness. I also find it
-              helpful to discuss challenges with my team or
-              supervisor to find solutions together.
-            </p>
-          </div>
-          <div>
-            <p className="font-bold text-white">Interviewer:</p>
-            <p className="italic">
-              Describe your ideal work environment.
-            </p>
-          </div>
-          <div>
-            <p className="font-bold text-white">Candidate:</p>
-            <p>
-              My ideal work environment is collaborative,
-              supportive, and challenging. I thrive in a place
-              where I can learn from others, contribute my
-              skills, and have opportunities for growth.
-            </p>
-          </div>
-          <div>
-            <p className="font-bold text-white">Candidate:</p>
-            <p>
-              My ideal work environment is collaborative,
-              supportive, and challenging. I thrive in a place
-              where I can learn from others, contribute my
-              skills, and have opportunities for growth.
-            </p>
-          </div>
-          <div>
-            <p className="font-bold text-white">Candidate:</p>
-            <p>
-              My ideal work environment is collaborative,
-              supportive, and challenging. I thrive in a place
-              where I can learn from others, contribute my
-              skills, and have opportunities for growth.
-            </p>
-          </div>
-          <div>
-            <p className="font-bold text-white">Candidate:</p>
-            <p>
-              My ideal work environment is collaborative,
-              supportive, and challenging. I thrive in a place
-              where I can learn from others, contribute my
-              skills, and have opportunities for growth.
-            </p>
-          </div>
+          {transcript.map((item, index) => {
+            return (
+              <div key={index}>
+                <p className="font-bold text-white">
+                  {item.role}:
+                </p>
+                <p
+                  className={
+                    item.role == "Interviewer" ? "italic" : ""
+                  }
+                >
+                  {item.content}
+                </p>
+              </div>
+            );
+          })}
         </div>
       </div>
     </main>
