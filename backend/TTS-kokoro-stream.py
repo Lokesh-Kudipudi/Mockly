@@ -7,10 +7,10 @@ import time
 warnings.filterwarnings("ignore")
 
 # Initialize the pipeline with your language code (e.g., 'a' for American English)
-pipeline = KPipeline(lang_code='a', repo_id='hexgrad/Kokoro-82M', trf=True)
+pipeline = KPipeline(lang_code='a', repo_id='hexgrad/Kokoro-82M')
 
 # Your input text
-text = "Without this playing with fantasy no creative work has ever yet come to birth. The debt we owe to the play of the imagination is incalculable."
+text = "The debt we owe to the play of the imagination is incalculable."
 
 # Generate audio using a specific voice (e.g., 'af_heart')
 generator = pipeline(text, voice='af_heart', speed=1)
