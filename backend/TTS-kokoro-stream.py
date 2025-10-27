@@ -3,14 +3,19 @@ import numpy as np
 import sounddevice as sd
 import warnings
 import time
+import torch
 
 warnings.filterwarnings("ignore")
 
+device = torch.device(
+    "mps") if torch.backends.mps.is_built() else torch.device("cpu")
+
 # Initialize the pipeline with your language code (e.g., 'a' for American English)
-pipeline = KPipeline(lang_code='a', repo_id='hexgrad/Kokoro-82M')
+pipeline = KPipeline(
+    lang_code='a', repo_id='hexgrad/Kokoro-82M', device=device)
 
 # Your input text
-text = "The debt we owe to the play of the imagination is incalculable."
+text = "The debt we owe to the play of the imagination is incalculable.The debt we owe to the play of the imagination is incalculable.The debt we owe to the play of the imagination is incalculable.The debt we owe to the play of the imagination is incalculable."
 
 # Generate audio using a specific voice (e.g., 'af_heart')
 generator = pipeline(text, voice='af_heart', speed=1)
