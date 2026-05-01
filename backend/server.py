@@ -1,6 +1,5 @@
-import io
 import os
-import wave
+import threading
 
 import constants
 import numpy as np
@@ -27,6 +26,19 @@ sio = SocketIO(app, cors_allowed_origins=FRONTEND_URL)
 
 states = {"is_recording": False, "recorded_chunks": [], "silent_chunks_count": 0}
 client_chat_models = {}
+
+tts_states = {}
+tts_lock = threading.Lock()
+
+
+def get_tts_state(user_id):
+  with tts_lock:
+    state = tts_states.get(user_id)
+    if not state:
+      state = {"cancel_event": None, "is_streaming": False}
+      tts_states[user_id] = state
+  return state
+
 
 print("Loading WhisperX Model")
 whisper_model = WhisperModel("tiny.en", device="cpu")
@@ -150,6 +162,7 @@ SAMPLING_RATE_TTS = constants.SAPLING_RATE_TTS
 CHUNK_SIZE = constants.CHUNK_SIZE  # Number of audio frames per buffer
 FORMAT = pyaudio.paInt16
 CHANNELS = constants.CHANNELS
+TTS_STREAM_CHUNK_SAMPLES = 2048
 
 # --- VAD Configuration ---
 # How many consecutive non-speech chunks to consider as end of speech
@@ -171,25 +184,49 @@ def processAudio():
   return audio_transcription
 
 
-def send_audio_bytes(llm_reply):
-  kokoro_generator = kokoro_model(llm_reply, voice="af_heart", speed=1)
+def start_tts_stream(llm_reply, sid, user_id):
+  tts_state = get_tts_state(user_id)
+  previous_event = tts_state.get("cancel_event")
+  if previous_event:
+    previous_event.set()
 
-  audio_list = []
-  for _, _, audio in kokoro_generator:
-    audio_list.append(audio)
+  cancel_event = threading.Event()
+  tts_state["cancel_event"] = cancel_event
+  tts_state["is_streaming"] = True
 
-  full_audio = np.concatenate(audio_list)
-  full_audio_int16 = (full_audio * 32767).astype(np.int16)
+  sio.start_background_task(stream_audio_bytes, llm_reply, sid, user_id, cancel_event)
 
-  buffer = io.BytesIO()
-  with wave.open(buffer, "wb") as wf:
-    wf.setnchannels(1)  # Mono
-    wf.setsampwidth(2)  # 16-bit
-    wf.setframerate(SAMPLING_RATE_TTS)
-    wf.writeframes(full_audio_int16.tobytes())
 
-  emit("audio-stream-client", buffer.getvalue())
-  pass
+def stream_audio_bytes(llm_reply, sid, user_id, cancel_event):
+  try:
+    sio.emit(
+      "audio-stream-start",
+      {"sampleRate": SAMPLING_RATE_TTS, "channels": 1},
+      to=sid,
+    )
+    kokoro_generator = kokoro_model(llm_reply, voice="af_heart", speed=1)
+
+    for _, _, audio in kokoro_generator:
+      if cancel_event.is_set():
+        break
+      if torch.is_tensor(audio):
+        audio_np = audio.detach().cpu().numpy()
+      else:
+        audio_np = np.asarray(audio)
+      audio_int16 = (audio_np * 32767).astype(np.int16)
+      total_len = len(audio_int16)
+      for start in range(0, total_len, TTS_STREAM_CHUNK_SAMPLES):
+        if cancel_event.is_set():
+          break
+        chunk = audio_int16[start : start + TTS_STREAM_CHUNK_SAMPLES]
+        sio.emit("audio-stream-chunk", chunk.tobytes(), to=sid)
+
+    if not cancel_event.is_set():
+      sio.emit("audio-stream-end", to=sid)
+  finally:
+    tts_state = get_tts_state(user_id)
+    if tts_state.get("cancel_event") is cancel_event:
+      tts_state["is_streaming"] = False
 
 
 @sio.on("audioBytes")
@@ -230,7 +267,7 @@ def handleAudioBytes(audioChunkBytes):
           llm_reply = send_message(audio_transcription)
           emit("transcript-interviewer-client", llm_reply)
           emit("set-status-client", "Sending Audio")
-          send_audio_bytes(llm_reply)
+          start_tts_stream(llm_reply, request.sid, states["userId"])
   except Exception as e:
     print(f"An Error occured: {e}")
   pass
@@ -242,8 +279,34 @@ def handleAudioStreadComplete():
   pass
 
 
+@sio.on("audio-stream-interrupt")
+def handleAudioStreamInterrupt():
+  user_id = states.get("userId")
+  if user_id:
+    tts_state = get_tts_state(user_id)
+    cancel_event = tts_state.get("cancel_event")
+    if cancel_event:
+      cancel_event.set()
+    tts_state["is_streaming"] = False
+
+  states["recorded_chunks"] = []
+  states["is_recording"] = False
+  states["silent_chunks_count"] = 0
+  vad_iterator.reset_states()
+
+  emit("audio-stream-interrupted")
+  emit("audio-start-client")
+  pass
+
+
 @sio.on("disconnect")
 def handleDisconnect():
+  user_id = states.get("userId")
+  if user_id:
+    tts_state = get_tts_state(user_id)
+    cancel_event = tts_state.get("cancel_event")
+    if cancel_event:
+      cancel_event.set()
   pass
 
 
