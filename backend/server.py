@@ -1,19 +1,20 @@
-import torch
-from flask_socketio import SocketIO, emit, join_room
-from flask import Flask, request
-from faster_whisper import WhisperModel
-from silero_vad import VADIterator
-import numpy as np
-import constants
-import pyaudio
+import io
 import os
+import wave
+
+import constants
+import numpy as np
+import pyaudio
+import torch
+from dotenv import load_dotenv
+from faster_whisper import WhisperModel
+from flask import Flask, request
+from flask_cors import CORS
+from flask_socketio import SocketIO, emit, join_room
 from google import genai
 from google.genai import types
-from dotenv import load_dotenv
-from flask_cors import CORS
 from kokoro import KPipeline
-import wave
-import io
+from silero_vad import VADIterator
 
 load_dotenv()
 FRONTEND_URL = "http://localhost:3000"
@@ -24,26 +25,24 @@ CORS(app, origins=[FRONTEND_URL])
 
 sio = SocketIO(app, cors_allowed_origins=FRONTEND_URL)
 
-states = {
-    "is_recording": False,
-    "recorded_chunks": [],
-    "silent_chunks_count": 0
-}
+states = {"is_recording": False, "recorded_chunks": [], "silent_chunks_count": 0}
 client_chat_models = {}
 
 print("Loading WhisperX Model")
 whisper_model = WhisperModel("tiny.en", device="cpu")
 
 print("Loading VAD Model")
-vad_model, _ = torch.hub.load(repo_or_dir="snakers4/silero-vad",
-                              model="silero_vad",
-                              trust_repo=True,
-                              force_reload=False,
-                              onnx=False)
+vad_model, _ = torch.hub.load(
+  repo_or_dir="snakers4/silero-vad",
+  model="silero_vad",
+  trust_repo=True,
+  force_reload=False,
+  onnx=False,
+)
 vad_iterator = VADIterator(vad_model)
 
 print("Loading TTS model")
-kokoro_model = KPipeline(lang_code='a', repo_id='hexgrad/Kokoro-82M')
+kokoro_model = KPipeline(lang_code="a", repo_id="hexgrad/Kokoro-82M")
 
 system_prompt = """
 You are an AI Interviewer. Conduct a mock interview for the following candidate:
@@ -52,13 +51,13 @@ Candidate Name: <<candidate_name>>
 Role Applied For: <<role>>
 Experience Level: <<experience_level>>
 Round: <<round>>
-Difficulty: <<difficulty>>
-Number of Questions: <<candidate_name>>
+Difficulty: <<difficulty_level>>
+Number of Questions: <<number_of_questions>>
 
 Follow these rules:
 
-1. Start with a short, polite greeting using the candidates name.
-2. Ask one interview question at a time, relevant to the job role and candidates experience.
+1. Start with a short, polite greeting using the candidate's name.
+2. Ask one interview question at a time, relevant to the job role and candidate's experience.
 3. Use short, clear, natural language suitable for Text-to-Speech (TTS).
 4. Keep each question concise—no more than 2 sentences.
 5. Do not give feedback, explanations, or answers.
@@ -66,36 +65,39 @@ Follow these rules:
 7. Maintain a professional but friendly tone.
 8. Do not break character.
 
+Handling Unclear or Improper Input:
+- If the candidate's response is too short, incomplete, or lacks detail, politely ask them to elaborate.
+- If the input is gibberish, unintelligible, or seems like a transcription error, politely ask them to repeat their answer.
+- If the candidate goes off-topic or provides unrelated information, gracefully redirect them back to the current interview question.
+- If the candidate uses inappropriate or unprofessional language, maintain your professional tone and ask them to keep the discussion professional.
+- If the given input like role, experience level, round, difficulty level or number of questions is not valid, ask the user to provide valid input.
+
 Begin the interview after this message.
 """
 
 
 def initialize_chatmodel():
   client = genai.Client(
-      api_key=os.environ.get("GEMINI_API_KEY"),
+    api_key=os.environ.get("GEMINI_API_KEY"),
   )
 
   prompt = system_prompt
-  prompt = prompt.replace("<<candidate_name>>",
-                          states.get("candidate_name", ""))
-  prompt = prompt.replace("<<experience_level>>",
-                          states.get("experience_level", ""))
+  prompt = prompt.replace("<<candidate_name>>", states.get("candidate_name", ""))
+  prompt = prompt.replace("<<experience_level>>", states.get("experience_level", ""))
   prompt = prompt.replace("<<role>>", states.get("role", ""))
   prompt = prompt.replace("<<round>>", states.get("round", ""))
-  prompt = prompt.replace("<<difficulty_level>>",
-                          states.get("difficulty_level", ""))
-  prompt = prompt.replace("<<number_of_questions>>", str(
-      states.get("number_of_questions", "")))
-
-  model = "gemini-2.0-flash-lite"
-
-  generate_content_config = types.GenerateContentConfig(
-      response_mime_type="text/plain",
-      system_instruction=prompt
+  prompt = prompt.replace("<<difficulty_level>>", states.get("difficulty_level", ""))
+  prompt = prompt.replace(
+    "<<number_of_questions>>", str(states.get("number_of_questions", ""))
   )
 
-  chat_model = client.chats.create(
-      model=model, config=generate_content_config)
+  model = "gemini-flash-latest"
+
+  generate_content_config = types.GenerateContentConfig(
+    response_mime_type="text/plain", system_instruction=prompt
+  )
+
+  chat_model = client.chats.create(model=model, config=generate_content_config)
 
   return chat_model
 
@@ -111,8 +113,7 @@ def transcribe_audio(audioChunkBytes):
   Funtion to Transcribe Audio Bytes into Text
   """
   audio_bytes = b"".join(audioChunkBytes)
-  audio_np = np.frombuffer(
-      audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+  audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
 
   segments, _ = whisper_model.transcribe(audio_np, language="en")
   return " ".join([segment.text for segment in segments])
@@ -138,7 +139,7 @@ def handleInitializeChatModelRoute():
     return {"status": "fail", "message": "Error Occured"}
 
 
-@sio.on('connect')
+@sio.on("connect")
 def handleConnect():
   pass
 
@@ -146,7 +147,7 @@ def handleConnect():
 # --- Audio Stream Configuration ---
 SAMPLING_RATE = constants.SAPLING_RATE  # VAD model expects 16000Hz
 SAMPLING_RATE_TTS = constants.SAPLING_RATE_TTS
-CHUNK_SIZE = constants.CHUNK_SIZE       # Number of audio frames per buffer
+CHUNK_SIZE = constants.CHUNK_SIZE  # Number of audio frames per buffer
 FORMAT = pyaudio.paInt16
 CHANNELS = constants.CHANNELS
 
@@ -171,7 +172,7 @@ def processAudio():
 
 
 def send_audio_bytes(llm_reply):
-  kokoro_generator = kokoro_model(llm_reply, voice='af_heart', speed=1)
+  kokoro_generator = kokoro_model(llm_reply, voice="af_heart", speed=1)
 
   audio_list = []
   for _, _, audio in kokoro_generator:
@@ -181,7 +182,7 @@ def send_audio_bytes(llm_reply):
   full_audio_int16 = (full_audio * 32767).astype(np.int16)
 
   buffer = io.BytesIO()
-  with wave.open(buffer, 'wb') as wf:
+  with wave.open(buffer, "wb") as wf:
     wf.setnchannels(1)  # Mono
     wf.setsampwidth(2)  # 16-bit
     wf.setframerate(SAMPLING_RATE_TTS)
@@ -191,17 +192,16 @@ def send_audio_bytes(llm_reply):
   pass
 
 
-@sio.on('audioBytes')
+@sio.on("audioBytes")
 def handleAudioBytes(audioChunkBytes):
   try:
-    if not states['is_recording']:
+    if not states["is_recording"]:
       audio_chunk_np = np.frombuffer(audioChunkBytes, dtype=np.int16)
       audio_float32 = audio_chunk_np.astype(np.float32) / 32768.0
-      speech_prob = vad_model(torch.from_numpy(
-          audio_float32), SAMPLING_RATE).item()
+      speech_prob = vad_model(torch.from_numpy(audio_float32), SAMPLING_RATE).item()
 
       if speech_prob > SPEECH_PROB_THRESHOLD:
-        states['is_recording'] = True
+        states["is_recording"] = True
 
     if states["is_recording"]:
       emit("set-status-client", "Recording")
@@ -209,13 +209,15 @@ def handleAudioBytes(audioChunkBytes):
       audio_chunk_np = np.frombuffer(audioChunkBytes, dtype=np.int16)
       audio_float32 = audio_chunk_np.astype(np.float32) / 32768.0
 
-      speech_dict = vad_iterator(torch.from_numpy(
-          audio_float32), return_seconds=False)
+      speech_dict = vad_iterator(torch.from_numpy(audio_float32), return_seconds=False)
 
       if speech_dict:
-        if 'start' in speech_dict:
+        if "start" in speech_dict:
           states["silent_chunks_count"] = 0
-      elif vad_model(torch.from_numpy(audio_float32), SAMPLING_RATE).item() > SPEECH_PROB_THRESHOLD:
+      elif (
+        vad_model(torch.from_numpy(audio_float32), SAMPLING_RATE).item()
+        > SPEECH_PROB_THRESHOLD
+      ):
         states["silent_chunks_count"] = 0
       else:
         states["silent_chunks_count"] += 1
@@ -234,7 +236,7 @@ def handleAudioBytes(audioChunkBytes):
   pass
 
 
-@sio.on('audio-stream-complete')
+@sio.on("audio-stream-complete")
 def handleAudioStreadComplete():
   emit("audio-start-client")
   pass
@@ -245,5 +247,5 @@ def handleDisconnect():
   pass
 
 
-if __name__ == '__main__':
-  sio.run(app, host='localhost', port=3001, debug=True)
+if __name__ == "__main__":
+  sio.run(app, host="localhost", port=3001, debug=True)
