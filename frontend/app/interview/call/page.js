@@ -7,44 +7,26 @@ const BACKEND_URL = "http://localhost:3001";
 let socket;
 let audioContext, workletNode, mediaStream;
 
-async function startRecording() {
-  audioContext = new AudioContext({ sampleRate: 16000 }); // Match backend
-  await audioContext.audioWorklet.addModule("/processor.js");
-
-  mediaStream = await navigator.mediaDevices.getUserMedia({
-    audio: true,
-  });
-
-  const source = audioContext.createMediaStreamSource(mediaStream);
-
-  workletNode = new AudioWorkletNode(audioContext, "pcm-processor");
-
-  workletNode.port.onmessage = (event) => {
-    const audioBuffer = event.data;
-    socket.emit("audioBytes", new Uint8Array(audioBuffer));
-  };
-
-  source.connect(workletNode).connect(audioContext.destination);
-}
-
-function stopRecording() {
-  if (mediaStream) {
-    mediaStream.getTracks().forEach((track) => track.stop());
-  }
-  if (audioContext) {
-    audioContext.close();
-  }
-}
-
 export default function InterviewForm() {
   const [transcript, setTranscript] = useState([]);
   const [status, setStatus] = useState("Listening"); // Listening, Recording, Processing
-  const [mode, setMode] = useState("recording"); // idle, recording
+  const [mode, setMode] = useState("recording"); // recording, monitoring
   const [isSpeaking, setIsSpeaking] = useState(false);
   const playbackContextRef = useRef(null);
   const playbackNodeRef = useRef(null);
   const playbackEndedRef = useRef(false);
   const lastInterviewerIndexRef = useRef(null);
+  const modeRef = useRef(mode);
+  const isSpeakingRef = useRef(isSpeaking);
+  const bargeInStateRef = useRef({
+    consecutive: 0,
+    lastTriggeredAt: 0,
+    triggered: false,
+  });
+  const AUTO_BARGE_IN_ENABLED = true;
+  const AUTO_BARGE_IN_THRESHOLD = 0.02;
+  const AUTO_BARGE_IN_FRAMES = 4;
+  const AUTO_BARGE_IN_COOLDOWN_MS = 1200;
 
   const markLastInterviewerInterrupted = () => {
     const index = lastInterviewerIndexRef.current;
@@ -117,6 +99,56 @@ export default function InterviewForm() {
   const stopPlayback = () => {
     resetPlaybackBuffer();
     setIsSpeaking(false);
+    isSpeakingRef.current = false;
+  };
+
+  const resetBargeInState = () => {
+    bargeInStateRef.current.consecutive = 0;
+    bargeInStateRef.current.triggered = false;
+  };
+
+  const interruptPlayback = (source) => {
+    if (!isSpeakingRef.current) {
+      return;
+    }
+
+    const now = Date.now();
+    bargeInStateRef.current.triggered = true;
+    bargeInStateRef.current.lastTriggeredAt = now;
+    bargeInStateRef.current.consecutive = 0;
+
+    modeRef.current = "recording";
+    setMode("recording");
+    stopPlayback();
+    socket?.emit("audio-stream-interrupt", { source });
+  };
+
+  const handleAutoBargeIn = (rms) => {
+    if (!AUTO_BARGE_IN_ENABLED) {
+      return;
+    }
+    if (!isSpeakingRef.current) {
+      return;
+    }
+
+    const state = bargeInStateRef.current;
+    const now = Date.now();
+    if (
+      state.triggered &&
+      now - state.lastTriggeredAt < AUTO_BARGE_IN_COOLDOWN_MS
+    ) {
+      return;
+    }
+
+    if (rms >= AUTO_BARGE_IN_THRESHOLD) {
+      state.consecutive += 1;
+    } else {
+      state.consecutive = 0;
+    }
+
+    if (state.consecutive >= AUTO_BARGE_IN_FRAMES) {
+      interruptPlayback("auto");
+    }
   };
 
   const handleInterrupt = () => {
@@ -124,9 +156,84 @@ export default function InterviewForm() {
       return;
     }
 
-    stopPlayback();
-    socket.emit("audio-stream-interrupt");
+    interruptPlayback("manual");
   };
+
+  const setupAudioCapture = async () => {
+    if (audioContext && mediaStream && workletNode) {
+      if (audioContext.state === "suspended") {
+        await audioContext.resume();
+      }
+      return;
+    }
+
+    audioContext = new AudioContext({ sampleRate: 16000 }); // Match backend
+    await audioContext.audioWorklet.addModule("/processor.js");
+
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
+
+    const source = audioContext.createMediaStreamSource(mediaStream);
+
+    workletNode = new AudioWorkletNode(audioContext, "pcm-processor");
+
+    workletNode.port.onmessage = (event) => {
+      const data = event.data;
+      if (!data || data.type !== "chunk") {
+        return;
+      }
+
+      const audioBuffer = data.payload;
+      const rms = data.rms ?? 0;
+
+      if (modeRef.current === "recording") {
+        if (audioBuffer) {
+          socket?.emit("audioBytes", new Uint8Array(audioBuffer));
+        }
+        return;
+      }
+
+      if (isSpeakingRef.current) {
+        handleAutoBargeIn(rms);
+      }
+    };
+
+    source.connect(workletNode).connect(audioContext.destination);
+  };
+
+  const shutdownAudioCapture = () => {
+    if (mediaStream) {
+      mediaStream.getTracks().forEach((track) => track.stop());
+      mediaStream = null;
+    }
+    if (audioContext) {
+      audioContext.close();
+      audioContext = null;
+    }
+    workletNode = null;
+  };
+
+  useEffect(() => {
+    modeRef.current = mode;
+    if (mode === "recording" || mode === "monitoring") {
+      setupAudioCapture();
+      if (mode === "recording") {
+        setStatus(() => "Listening");
+      }
+    }
+  }, [mode]);
+
+  useEffect(() => {
+    isSpeakingRef.current = isSpeaking;
+    if (!isSpeaking) {
+      resetBargeInState();
+    }
+  }, [isSpeaking]);
 
   useEffect(() => {
     socket = io(BACKEND_URL);
@@ -141,8 +248,7 @@ export default function InterviewForm() {
     });
 
     socket.on("audio-stop-client", () => {
-      setMode(() => "idle");
-      stopRecording();
+      setMode(() => "monitoring");
     });
 
     socket.on("transcript-user-client", (data) => {
@@ -163,6 +269,7 @@ export default function InterviewForm() {
     socket.on("audio-stream-start", async (payload) => {
       await ensurePlaybackReady(payload?.sampleRate);
       resetPlaybackBuffer();
+      resetBargeInState();
       setIsSpeaking(true);
     });
 
@@ -217,6 +324,7 @@ export default function InterviewForm() {
 
     return () => {
       stopPlayback();
+      shutdownAudioCapture();
       if (playbackContextRef.current) {
         playbackContextRef.current.close();
       }
@@ -225,13 +333,6 @@ export default function InterviewForm() {
       }
     };
   }, []);
-
-  useEffect(() => {
-    if (mode == "recording") {
-      startRecording();
-      setStatus(() => "Listening");
-    }
-  }, [mode]);
 
   return (
     <main className="flex-grow flex items-center justify-center">

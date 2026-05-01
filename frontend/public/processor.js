@@ -4,6 +4,8 @@ class PCMProcessor extends AudioWorkletProcessor {
     super();
     this.buffer = [];
     this.bufferSize = 512;
+    this.rmsSum = 0;
+    this.rmsCount = 0;
   }
 
   process(inputs) {
@@ -15,12 +17,25 @@ class PCMProcessor extends AudioWorkletProcessor {
         let sample = channelData[i];
         sample = Math.max(-1, Math.min(1, sample));
         this.buffer.push(sample * 0x7fff); // Convert to int16 range
+        this.rmsSum += sample * sample;
+        this.rmsCount += 1;
       }
 
       if (this.buffer.length >= 512) {
         const chunk = new Int16Array(this.buffer.slice(0, 512));
-        this.port.postMessage(chunk.buffer);
+        const rms =
+          this.rmsCount > 0 ? Math.sqrt(this.rmsSum / this.rmsCount) : 0;
+        this.port.postMessage(
+          {
+            type: "chunk",
+            payload: chunk.buffer,
+            rms,
+          },
+          [chunk.buffer],
+        );
         this.buffer = this.buffer.slice(512); // Keep overflow if any
+        this.rmsSum = 0;
+        this.rmsCount = 0;
       }
     }
     return true;
